@@ -108,7 +108,7 @@ def render_feed_tab():
             if t["ai_filled"]:
                 st.caption("🤖 Pôvodne auto-vyplnené z AI skenovania")
 
-            # ---- Jedným klikom skopírovať ----
+            # ---- Jedným klikom skopírovať (len pre ostatných, nie pre autora) ----
             if str(t["user_id"]) != str(user["id"]):
                 copy_label = "⚠️ Skopírovať napriek starnutiu kurzu" if is_stale_live else "📋 Skopírovať do mojej kalkulačky"
                 if st.button(copy_label, key=f"copy_{t['id']}"):
@@ -120,6 +120,14 @@ def render_feed_tab():
                         "sharp_provider": t["sharp_provider"] or "", "liquidity": t["liquidity"] or "",
                     }
                     st.success("Dáta skopírované! Choď na stránku 🆕 Nový Tiket - formulár bude predvyplnený.")
+
+            # ---- Stiahnuť zo Syndikátu (len autor tiketu) ----
+            if str(t["user_id"]) == str(user["id"]):
+                if st.button("❌ Stiahnuť zo Syndikátu", key=f"unshare_{t['id']}"):
+                    db.unshare_ticket(t["id"])
+                    st.success("Tiket bol stiahnutý z Feedu a vrátený do tvojich súkromných tiketov.")
+                    st.rerun()
+
 
             # ---- Emoji reakcie ----
             counts = db.get_reaction_counts(t["id"])
