@@ -48,7 +48,7 @@ text, žiadne markdown bločky) s týmito kľúčmi:
   "opacny_kurz": 1.51,
   "typ_opacneho_kurzu": "Žiadny",
   "sharp_provider": "názov sharp protistrany/výmeny ak je viditeľný, napr. Betdaq, Pinnacle, inak prázdny string",
-  "liquidity": "likvidita protistrany presne tak, ako je zobrazená na screenshote, napr. '150€', inak prázdny string"
+  "liquidity": "číslo likvidity presne tak, ako je napísané pod kurzom protistrany, napr. '$65.91' alebo '65.91', inak prázdny string"
 }
 
 DÔLEŽITÉ - arbitráž / surebet / BetBurger screenshoty:
@@ -67,10 +67,25 @@ domáci/hosť, sharp vs soft strana):
     "typ_opacneho_kurzu" na "Sharp referencia protistrany".
   - Ak screenshot žiadny opačný/protistranový kurz vôbec neobsahuje, nechaj
     "opacny_kurz" na null a "typ_opacneho_kurzu" na "Žiadny".
-  - BetBurger layout typicky pri kurze protistrany zobrazuje aj názov burzy/knihy
-    (napr. "Betdaq", "Pinnacle", "Betfair") a číslo likvidity vedľa alebo pod
-    kurzom (napr. "150€", "1.2K€") - tieto vytiahni do "sharp_provider" a
-    "liquidity" presne tak, ako sú napísané na obrázku.
+  - Pri BetBurger layoute vytiahni "sharp_provider" ako názov burzy/knihy
+    zobrazený pri kurze protistrany (napr. "Betdaq", "Pinnacle", "Betfair").
+  - LIKVIDITA - typický BetBurger screenshot má DVA riadky nad sebou, jeden pre
+    každú stranu stávky (napr. "Tipsport" hore, "Betdaq" dole). Každý riadok má
+    v pravej časti tip (napr. "Team1 Win" / "Team2 Win") a vedľa neho kurz so
+    šípkou (napr. "↑ 3.03" / "↑ 1.51"). LIKVIDITA sa nachádza IBA na riadku
+    PROTISTRANY (sharp strana, riadok s "sharp_provider") - PRIAMO POD jej
+    kurzom, v tom istom stĺpci, menším písmom, veľmi často so symbolom "$"
+    (napr. "$65.91"). Riadok hlavného soft tipu túto druhú hodnotu pod kurzom
+    typicky vôbec nemá. Príklad presného rozloženia:
+        Tipsport   ...   Team1 Win   ↑ 3.03
+        Betdaq     ...   Team2 Win   ↑ 1.51
+                                      $65.91    <- toto je liquidity (patrí k riadku Betdaq/protistrany)
+    Zapíš do "liquidity" presne to, čo je pod kurzom protistrany, vrátane
+    symbolu meny, ak je prítomný (napr. "$65.91"). Niekedy môže byť likvidita
+    aj bez symbolu meny (čisté číslo ako "65.91") - v oboch prípadoch ju zapíš
+    presne tak, ako je napísaná. Iba ak pod kurzom protistrany naozaj žiadne
+    takéto menšie číslo nevidíš, nechaj "liquidity" prázdne - nezamieňaj si ho
+    so samotným kurzom a nevynechávaj ho len preto, že nemá symbol meny.
 
 Dôležité pravidlá pre platný JSON:
 - Ak sa v tíme, lige alebo tipe vyskytuje úvodzovka ('), escapuj ju alebo ju vynechaj.
