@@ -26,6 +26,7 @@ Ak sa parsovanie úplne nepodarí (žiadne pole sa nedalo obnoviť), vráti None
 """
 
 import base64
+import datetime
 import json
 import re
 
@@ -43,7 +44,7 @@ text, žiadne markdown bločky) s týmito kľúčmi:
   "tip": "konkrétny tip, napr. '1', 'Over 2.5'",
   "soft_kurz": 1.85,
   "skore": "aktuálne skóre ak je viditeľné, inak prázdny string",
-  "match_date": "dátum začiatku zápasu vo formáte YYYY-MM-DD, ak je na obrázku viditeľný dátum (napr. '19.7.' alebo '19.7.2026'), inak prázdny string",
+  "match_date": "dátum začiatku zápasu vo formáte YYYY-MM-DD, ak je na obrázku viditeľný dátum, inak prázdny string",
   "match_time": "čas začiatku zápasu vo formáte HH:MM (24-hodinový), ak je viditeľný, inak prázdny string",
   "opacny_kurz": 1.51,
   "typ_opacneho_kurzu": "Žiadny",
@@ -87,6 +88,15 @@ domáci/hosť, sharp vs soft strana):
     takéto menšie číslo nevidíš, nechaj "liquidity" prázdne - nezamieňaj si ho
     so samotným kurzom a nevynechávaj ho len preto, že nemá symbol meny.
 
+DÔLEŽITÉ - dátum zápasu ("match_date"):
+Stávkové appky a arbitrážne skenery často zobrazujú dátum bez roku (napr. len
+"20 Jul" alebo "20.7."), keďže je to zrejme z kontextu (aktuálna sezóna). Ak na
+obrázku VIDÍŠ rok, použi presne ten. Ak rok NIE JE na obrázku vôbec uvedený,
+automaticky doplň aktuálny rok __CURRENT_YEAR__ (nepýtaj sa, nenechávaj rok prázdny).
+Výsledný "match_date" musí byť VŽDY v prísnom formáte "YYYY-MM-DD" (napr.
+"__CURRENT_YEAR__-07-20"), nikdy v inom tvare (nie "20.7.__CURRENT_YEAR__", nie "20/07/__CURRENT_YEAR__") - inak ho
+appka nevie spracovať.
+
 Dôležité pravidlá pre platný JSON:
 - Ak sa v tíme, lige alebo tipe vyskytuje úvodzovka ('), escapuj ju alebo ju vynechaj.
 - Nepoužívaj markdown bloky (```), žiadny text pred alebo za JSON objektom.
@@ -114,6 +124,16 @@ _NUMERIC_FIELDS = ["soft_kurz", "opacny_kurz"]
 # ide o klasifikačné pole s netriviálnym defaultom ("Žiadny"), nie o dátovú
 # hodnotu z obrázka, takže samo o sebe by falošne vyzeralo ako "niečo sa našlo".
 _EMPTINESS_IGNORED_FIELDS = {"typ_opacneho_kurzu"}
+
+
+def _build_prompt() -> str:
+    """
+    Nahradí placeholder __CURRENT_YEAR__ v PARSE_PROMPT skutočným aktuálnym rokom.
+    Zámerne používame jednoduchý str.replace() namiesto str.format() - prompt
+    obsahuje doslovné JSON príklady so zloženými zátvorkami { }, ktoré by
+    .format() nesprávne interpretoval ako placeholdery.
+    """
+    return PARSE_PROMPT.replace("__CURRENT_YEAR__", str(datetime.date.today().year))
 
 
 def _strip_markdown_fences(text: str) -> str:
@@ -238,7 +258,7 @@ def parse_with_openai(image_bytes: bytes, api_key: str) -> tuple:
                     {
                         "role": "user",
                         "content": [
-                            {"type": "text", "text": PARSE_PROMPT},
+                            {"type": "text", "text": _build_prompt()},
                             {
                                 "type": "image_url",
                                 "image_url": {"url": f"data:image/png;base64,{b64}"},
@@ -309,7 +329,7 @@ def parse_with_gemini(image_bytes: bytes, api_key: str) -> tuple:
             try:
                 response = client.models.generate_content(
                     model=model_name,
-                    contents=[PARSE_PROMPT, image_part],
+                    contents=[_build_prompt(), image_part],
                     config=config,
                 )
                 last_error = None
