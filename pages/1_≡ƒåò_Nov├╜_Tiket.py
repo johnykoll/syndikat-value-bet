@@ -69,7 +69,8 @@ if prefill.get("match_time"):
         prefill_time_val = None
 
 dc1, dc2 = st.columns(2)
-match_date = dc1.date_input("📅 Dátum zápasu", value=prefill_date_val or datetime.date.today())
+match_date = dc1.date_input("📅 Dátum zápasu", value=prefill_date_val or datetime.date.today(),
+                             format="DD.MM.YYYY")
 match_time = dc2.time_input("🕒 Čas zápasu", value=prefill_time_val or datetime.time(hour=15, minute=0))
 
 if prefill and (prefill_date_val or prefill_time_val):
