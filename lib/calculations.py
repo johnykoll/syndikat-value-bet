@@ -82,17 +82,25 @@ def resolve_fair_kurz(soft_kurz: float, sharp_k: Optional[float], opacny_kurz: O
 
     - SCENÁR 1: sharp_k je vyplnený (priamy sharp kurz, s opacny_kurz ako
       prípadným druhým sharp kurzom L rovnakej dvojice) -> `fair_kurz()`.
-    - SCENÁR 2: sharp_k chýba, opacny_kurz vyplnený a označený ako
-      "market_pair" (BetBurger arbitráž) -> `fair_kurz_market_pair()`.
-    - SCENÁR 3: sharp_k chýba, opacny_kurz vyplnený a označený ako
-      "sharp_reference" (sharp kurz protistrany) -> `fair_kurz_from_opponent_margin()`.
+    - SCENÁR 2: `fair_kurz_market_pair()` (priamy devig zo súčtu 1/Soft + 1/Opačný,
+      bez použitia globálnej marže) je matematicky správny LEN ak obe strany
+      kurzu pochádzajú z TEJ ISTEJ stávkovej kancelárie/burzy (t.j. skutočne
+      tvoria jeden uzavretý dvojkurzový trh). BetBurger arbitráž toto NESPĹŇA -
+      Soft aj Opačný kurz sú z dvoch rôznych kníh (napr. Tipsport + Pinnacle/Betdaq),
+      takže ich súčet implikovaných pravdepodobností nie je skutočná trhová marža,
+      len náhodný rozdiel dvoch nezávislých kníh. Preto sa Scenár 2 aktuálne cez UI
+      vôbec nevyvoláva (žiadna z ponúkaných možností "Čo predstavuje opačný kurz?"
+      naň nemapuje) - funkcia ostáva k dispozícii len pre prípadné budúce použitie,
+      keby appka niekedy rozlišovala aj skutočný single-book two-way trh.
+    - SCENÁR 3: sharp_k chýba, opacny_kurz vyplnený - platí pre OBE aktuálne UI
+      možnosti "Trhový pár (BetBurger)" aj "Sharp referencia protistrany", keďže
+      v oboch prípadoch ide o kurz z inej knihy než náš soft tip -> vždy
+      `fair_kurz_from_opponent_margin()` (devig cez registrovanú globálnu maržu).
     - Inak: nedostatok dát -> (None, None).
     """
     if sharp_k:
         return fair_kurz(sharp_k, opacny_kurz, global_marza), 1
-    if opacny_kurz and opponent_role == "market_pair":
-        return fair_kurz_market_pair(soft_kurz, opacny_kurz), 2
-    if opacny_kurz and opponent_role == "sharp_reference":
+    if opacny_kurz and opponent_role in ("market_pair", "sharp_reference"):
         return fair_kurz_from_opponent_margin(opacny_kurz, global_marza), 3
     return None, None
 
