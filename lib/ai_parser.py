@@ -5,12 +5,14 @@ Podporuje dvoch providerov - používateľ si v Nastaveniach vyberie, ktorého c
 použiť, a zadá vlastný API kľúč (ukladá sa iba do st.session_state, nikdy do DB).
 
   - OpenAI gpt-4o-mini (vision)
-  - Google Gemini 1.5/2.0 Flash (vision)
+  - Google Gemini 2.5 Flash (vision)
 
 Obe funkcie vracajú rovnaký normalizovaný dict:
 {
   "sport": str, "liga": str, "timy": str, "soft_bookmaker": str,
-  "typ_marketu": str, "tip": str, "soft_kurz": float, "skore": str
+  "typ_marketu": str, "tip": str, "soft_kurz": float, "skore": str,
+  "match_date": str (ISO 'YYYY-MM-DD' ak je viditeľný dátum zápasu, inak ""),
+  "match_time": str ('HH:MM' ak je viditeľný čas začiatku zápasu, inak "")
 }
 Ak sa parsovanie nepodarí, vráti None a chybovú správu.
 """
@@ -31,7 +33,9 @@ jeden čistý JSON objekt (žiadny iný text, žiadne markdown bločky) s týmit
   "typ_marketu": "napr. 1X2, Hándicap, Total Over/Under",
   "tip": "konkrétny tip, napr. '1', 'Over 2.5'",
   "soft_kurz": 1.85,
-  "skore": "aktuálne skóre ak je viditeľné, inak prázdny string"
+  "skore": "aktuálne skóre ak je viditeľné, inak prázdny string",
+  "match_date": "dátum začiatku zápasu vo formáte YYYY-MM-DD, ak je na obrázku viditeľný dátum (napr. '19.7.' alebo '19.7.2026'), inak prázdny string",
+  "match_time": "čas začiatku zápasu vo formáte HH:MM (24-hodinový), ak je viditeľný, inak prázdny string"
 }
 
 Ak niektorú hodnotu nevieš určiť, daj prázdny string ("") alebo pre soft_kurz hodnotu null.
@@ -88,14 +92,28 @@ def parse_with_openai(image_bytes: bytes, api_key: str) -> tuple:
 
 
 def parse_with_gemini(image_bytes: bytes, api_key: str) -> tuple:
-    """Vráti (data_dict | None, error_message | None). Vyžaduje balíček `requests`."""
+    """
+    Vráti (data_dict | None, error_message | None). Vyžaduje balíček `requests`.
+
+    Model: gemini-2.5-flash (stabilný GA model, dostatočne rýchly a lacný pre
+    štruktúrovanú extrakciu dát zo screenshotu). gemini-1.5-flash je vyradený model
+    (Google ho zrušil) - preto pôvodná verzia hádzala 404. Ak by ste chceli maximálny
+    výkon a nevadí vyššia cena/latencia, dá sa vymeniť za "gemini-3.5-flash".
+
+    Autentifikácia: podľa aktuálneho odporúčania Google posielame kľúč cez hlavičku
+    `x-goog-api-key`, nie cez `?key=` v URL (staršie ?key= naďalej funguje, ale
+    exponuje kľúč v logoch/URL, takže sa už neodporúča pre nový kód).
+    """
     import requests
 
     b64 = _image_to_b64(image_bytes)
     try:
         resp = requests.post(
-            "https://generativelanguage.googleapis.com/v1beta/models/"
-            f"gemini-1.5-flash:generateContent?key={api_key}",
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
+            headers={
+                "x-goog-api-key": api_key,
+                "Content-Type": "application/json",
+            },
             json={
                 "contents": [
                     {
