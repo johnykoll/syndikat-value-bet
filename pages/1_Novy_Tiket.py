@@ -1,5 +1,6 @@
 import streamlit as st
 import sys, os
+import datetime
 
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 from lib import database as db
@@ -51,6 +52,28 @@ c1, c2, c3 = st.columns(3)
 soft_bookmaker = c1.text_input("Soft stávková kancelária", value=prefill.get("soft_bookmaker", ""))
 typ_marketu = c2.text_input("Typ marketu", value=prefill.get("typ_marketu", ""))
 tip = c3.text_input("Tip", value=prefill.get("tip", ""))
+
+# ---- Dátum a čas zápasu (na kontrolu 42-dňovej lehoty Pyramídy a value bet analytiku) ----
+prefill_date_val = None
+if prefill.get("match_date"):
+    try:
+        prefill_date_val = datetime.date.fromisoformat(prefill["match_date"])
+    except (ValueError, TypeError):
+        prefill_date_val = None
+
+prefill_time_val = None
+if prefill.get("match_time"):
+    try:
+        prefill_time_val = datetime.datetime.strptime(prefill["match_time"], "%H:%M").time()
+    except (ValueError, TypeError):
+        prefill_time_val = None
+
+dc1, dc2 = st.columns(2)
+match_date = dc1.date_input("📅 Dátum zápasu", value=prefill_date_val or datetime.date.today())
+match_time = dc2.time_input("🕒 Čas zápasu", value=prefill_time_val or datetime.time(hour=15, minute=0))
+
+if prefill and (prefill_date_val or prefill_time_val):
+    st.caption("🤖 Dátum/čas zápasu auto-vyplnené z AI skenovania - skontroluj, či sedí so screenshotom.")
 
 is_live = st.checkbox("🔴 LIVE stávka (zápas prebieha, kurzy sa menia každú minútu)",
                        help="Ak zaškrtneš, tiket vo Feede dostane po 3 minútach vizuálne upozornenie, "
@@ -186,6 +209,7 @@ def _build_ticket_data(shared_flag: int):
         "pyramid_level": pyramid_level, "shared": shared_flag,
         "ai_filled": 1 if prefill else 0, "is_live": 1 if is_live else 0,
         "mix_tiket": 1 if mix_tiket else 0,
+        "match_date": match_date.isoformat(), "match_time": match_time.strftime("%H:%M"),
     }
 
 
