@@ -93,41 +93,42 @@ def parse_with_openai(image_bytes: bytes, api_key: str) -> tuple:
 
 def parse_with_gemini(image_bytes: bytes, api_key: str) -> tuple:
     """
-    Vráti (data_dict | None, error_message | None). Vyžaduje balíček `requests`.
+    Vráti (data_dict | None, error_message | None).
+
+    Používa oficiálne Google Gen AI Python SDK (balíček `google-genai`, import
+    `from google import genai`) namiesto ručného skladania REST URL cez `requests`.
+    SDK si samo rieši správnu verziu endpointu aj serializáciu multimodálneho vstupu,
+    takže sa vyhneme 404 chybám z nesprávne poskladanej URL.
 
     Model: gemini-2.5-flash (stabilný GA model, dostatočne rýchly a lacný pre
-    štruktúrovanú extrakciu dát zo screenshotu). gemini-1.5-flash je vyradený model
-    (Google ho zrušil) - preto pôvodná verzia hádzala 404. Ak by ste chceli maximálny
-    výkon a nevadí vyššia cena/latencia, dá sa vymeniť za "gemini-3.5-flash".
+    štruktúrovanú extrakciu dát zo screenshotu). Ak by ste chceli maximálny výkon
+    a nevadí vyššia cena/latencia, dá sa vymeniť za "gemini-3.5-flash".
 
-    Autentifikácia: podľa aktuálneho odporúčania Google posielame kľúč cez hlavičku
-    `x-goog-api-key`, nie cez `?key=` v URL (staršie ?key= naďalej funguje, ale
-    exponuje kľúč v logoch/URL, takže sa už neodporúča pre nový kód).
+    Vyžaduje: pip install google-genai (pridané do requirements.txt).
     """
-    import requests
-
-    b64 = _image_to_b64(image_bytes)
     try:
-        resp = requests.post(
-            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
-            headers={
-                "x-goog-api-key": api_key,
-                "Content-Type": "application/json",
-            },
-            json={
-                "contents": [
-                    {
-                        "parts": [
-                            {"text": PARSE_PROMPT},
-                            {"inline_data": {"mime_type": "image/png", "data": b64}},
-                        ]
-                    }
-                ]
-            },
-            timeout=30,
+        from google import genai
+        from google.genai import types
+    except ImportError:
+        return None, (
+            "Chýba knižnica `google-genai`. Nainštaluj ju cez `pip install google-genai` "
+            "a reštartuj appku."
         )
-        resp.raise_for_status()
-        content = resp.json()["candidates"][0]["content"]["parts"][0]["text"]
+
+    try:
+        client = genai.Client(api_key=api_key)
+
+        image_part = types.Part.from_bytes(data=image_bytes, mime_type="image/png")
+
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=[PARSE_PROMPT, image_part],
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+            ),
+        )
+
+        content = response.text
         return _extract_json(content), None
     except Exception as e:
         return None, f"Gemini parsing zlyhalo: {e}"
