@@ -1,6 +1,12 @@
 """
 Databázová vrstva - lokálna SQLite databáza (simulácia multi-user backendu pre MVP).
 Súbor sa vytvorí automaticky pri prvom spustení: synbet.db
+
+Táto verzia obsahuje GENERICKÝ samo-opravný migračný mechanizmus (_ensure_columns):
+pri každom volaní init_db() sa porovná, aké stĺpce tabuľka aktuálne má, a čokoľvek
+chýba (napr. po pridaní novej funkcie appky) sa bezpečne dorovná cez ALTER TABLE.
+Toto rieši presne situáciu na Streamlit Cloude, kde databázový súbor prežíva
+reštarty appky, ale kód sa medzičasom posunul dopredu.
 """
 
 import sqlite3
@@ -9,6 +15,53 @@ import datetime
 from contextlib import contextmanager
 
 DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "synbet.db")
+
+# Kompletný zoznam stĺpcov, ktoré MUSIA existovať v tabuľke `users`.
+# Kľúč = názov stĺpca, hodnota = SQL typ + DEFAULT použitý pri ALTER TABLE aj CREATE TABLE.
+USERS_COLUMNS = {
+    "username": "TEXT UNIQUE NOT NULL",
+    "bankroll": "REAL DEFAULT 1000",
+    "kelly_frakcia": "REAL DEFAULT 0.25",
+    "max_bet_limit": "REAL DEFAULT 0.05",
+    "global_marza": "REAL DEFAULT 0.04",
+    "pyramid_level": "INTEGER DEFAULT 0",
+    "pyramid_profit": "REAL DEFAULT 0",       # historický názov, ponechaný pre spätnú kompatibilitu
+    "pyramid_money": "REAL DEFAULT 0.0",      # rovnaká hodnota ako pyramid_profit, udržiavaná synchrónne
+    "pyramid_body": "INTEGER DEFAULT 0",      # Nety (vernostné body)
+    "pyramid_hlavna_cena": "INTEGER DEFAULT 0",
+    "created_at": "TEXT",
+}
+
+# Kompletný zoznam stĺpcov, ktoré MUSIA existovať v tabuľke `tickets` (okrem PK a FK).
+TICKETS_COLUMNS = {
+    "user_id": "INTEGER NOT NULL",
+    "sport": "TEXT",
+    "liga": "TEXT",
+    "timy": "TEXT",
+    "soft_bookmaker": "TEXT",
+    "typ_marketu": "TEXT",
+    "tip": "TEXT",
+    "sharp_k": "REAL",
+    "sharp_l": "REAL",
+    "soft_kurz": "REAL",
+    "fair_kurz": "REAL",
+    "edge": "REAL",
+    "kelly_pct": "REAL",
+    "priebezna_hodnota_tiketu": "REAL",
+    "odporucany_vklad": "REAL",
+    "neposistena_cast": "REAL",
+    "proti_kurz": "REAL",
+    "proti_vklad": "REAL",
+    "skore": "TEXT",
+    "status": "TEXT DEFAULT 'Otvorený'",
+    "pnl": "REAL",
+    "pyramid_level": "INTEGER",
+    "shared": "INTEGER DEFAULT 0",
+    "ai_filled": "INTEGER DEFAULT 0",
+    "is_live": "INTEGER DEFAULT 0",
+    "mix_tiket": "INTEGER DEFAULT 0",
+    "created_at": "TEXT",
+}
 
 
 @contextmanager
@@ -23,9 +76,30 @@ def get_conn():
         conn.close()
 
 
+def _ensure_columns(conn: sqlite3.Connection, table: str, columns: dict):
+    """
+    Samo-opravná migrácia: porovná stĺpce, ktoré tabuľka `table` aktuálne má,
+    so zoznamom `columns`, a čokoľvek chýba, bezpečne doplní cez ALTER TABLE.
+    Bezpečné volať opakovane pri každom štarte appky - už existujúce stĺpce sa preskočia.
+    """
+    existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    for col_name, col_def in columns.items():
+        if col_name in existing:
+            continue
+        # ALTER TABLE ADD COLUMN nepodporuje UNIQUE/NOT NULL bez DEFAULT na existujúcich riadkoch,
+        # takže pre dodatočnú migráciu očistíme definíciu len na typ + prípadný DEFAULT.
+        safe_def = col_def.replace("UNIQUE NOT NULL", "TEXT").replace("NOT NULL", "")
+        try:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {col_name} {safe_def}")
+        except sqlite3.OperationalError:
+            # stĺpec medzitým mohol pribudnúť (napr. súbežný proces) - bezpečné ignorovať
+            pass
+
+
 def init_db():
     with get_conn() as conn:
         c = conn.cursor()
+
         c.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -36,9 +110,14 @@ def init_db():
                 global_marza REAL DEFAULT 0.04,
                 pyramid_level INTEGER DEFAULT 0,
                 pyramid_profit REAL DEFAULT 0,
+                pyramid_money REAL DEFAULT 0.0,
+                pyramid_body INTEGER DEFAULT 0,
+                pyramid_hlavna_cena INTEGER DEFAULT 0,
                 created_at TEXT
             )
         """)
+        _ensure_columns(conn, "users", USERS_COLUMNS)
+
         c.execute("""
             CREATE TABLE IF NOT EXISTS tickets (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -67,14 +146,13 @@ def init_db():
                 shared INTEGER DEFAULT 0,
                 ai_filled INTEGER DEFAULT 0,
                 is_live INTEGER DEFAULT 0,
+                mix_tiket INTEGER DEFAULT 0,
                 created_at TEXT,
                 FOREIGN KEY (user_id) REFERENCES users (id)
             )
         """)
-        # Migrácia pre existujúce DB súbory vytvorené pred pridaním is_live stĺpca.
-        existing_cols = [row["name"] for row in c.execute("PRAGMA table_info(tickets)").fetchall()]
-        if "is_live" not in existing_cols:
-            c.execute("ALTER TABLE tickets ADD COLUMN is_live INTEGER DEFAULT 0")
+        _ensure_columns(conn, "tickets", TICKETS_COLUMNS)
+
         c.execute("""
             CREATE TABLE IF NOT EXISTS feed_comments (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -142,12 +220,46 @@ def adjust_user_bankroll(user_id: int, delta: float):
         conn.execute("UPDATE users SET bankroll = bankroll + ? WHERE id = ?", (delta, user_id))
 
 
-def update_pyramid_progress(user_id: int, level: int, profit_delta: float):
+def update_pyramid_progress(user_id: int, level: int, profit_delta: float, reward: dict = None):
+    """
+    Aktualizuje level a pripisuje odmenu podľa Bodu 2.5.1 oficiálnych pravidiel:
+    - reward["type"] == "body"          -> pripočíta sa do pyramid_body (Nety)
+    - reward["type"] == "eur"           -> pripočíta sa do pyramid_profit AJ pyramid_money (€)
+    - reward["type"] == "hlavna_cena"   -> nastaví sa pyramid_hlavna_cena = 1
+
+    profit_delta zostáva ako doplnkové reálne PnL zápasu (nezávislé od odmeny za level).
+    pyramid_profit a pyramid_money sa udržiavajú synchrónne - appka historicky používala
+    pyramid_profit, no pyramid_money je udržiavaný ako rovnocenný alias pre prípad, že ho
+    niektorá stránka číta priamo.
+    """
     with get_conn() as conn:
         conn.execute(
-            "UPDATE users SET pyramid_level = ?, pyramid_profit = pyramid_profit + ? WHERE id = ?",
-            (level, profit_delta, user_id),
+            """UPDATE users
+               SET pyramid_level = ?,
+                   pyramid_profit = pyramid_profit + ?,
+                   pyramid_money = pyramid_money + ?
+               WHERE id = ?""",
+            (level, profit_delta or 0, profit_delta or 0, user_id),
         )
+        if reward:
+            if reward["type"] == "body":
+                conn.execute(
+                    "UPDATE users SET pyramid_body = pyramid_body + ? WHERE id = ?",
+                    (reward["amount"], user_id),
+                )
+            elif reward["type"] == "eur":
+                conn.execute(
+                    """UPDATE users
+                       SET pyramid_profit = pyramid_profit + ?,
+                           pyramid_money = pyramid_money + ?
+                       WHERE id = ?""",
+                    (reward["amount"], reward["amount"], user_id),
+                )
+            elif reward["type"] == "hlavna_cena":
+                conn.execute(
+                    "UPDATE users SET pyramid_hlavna_cena = 1 WHERE id = ?",
+                    (user_id,),
+                )
 
 
 def get_user(user_id: int):
