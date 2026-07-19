@@ -60,6 +60,9 @@ TICKETS_COLUMNS = {
     "ai_filled": "INTEGER DEFAULT 0",
     "is_live": "INTEGER DEFAULT 0",
     "mix_tiket": "INTEGER DEFAULT 0",
+    "match_date": "TEXT",   # dátum zápasu, zadaný ručne používateľom (ISO 'YYYY-MM-DD')
+    "match_time": "TEXT",   # čas začiatku zápasu, zadaný ručne používateľom (napr. '15:30')
+    "placed_at": "TEXT",    # automatický systémový timestamp momentu podania tiketu
     "created_at": "TEXT",
 }
 
@@ -147,6 +150,9 @@ def init_db():
                 ai_filled INTEGER DEFAULT 0,
                 is_live INTEGER DEFAULT 0,
                 mix_tiket INTEGER DEFAULT 0,
+                match_date TEXT,
+                match_time TEXT,
+                placed_at TEXT,
                 created_at TEXT,
                 FOREIGN KEY (user_id) REFERENCES users (id)
             )
@@ -270,15 +276,25 @@ def get_user(user_id: int):
 # ---------- TICKETS ----------
 
 def create_ticket(user_id: int, data: dict) -> int:
+    """
+    Vytvorí nový tiket. `placed_at` sa zapisuje automaticky (systémový čas podania,
+    nezávislý od `match_date`/`match_time`, ktoré si zadáva používateľ ručne).
+    Ak `data` už obsahuje kľúč `placed_at` (zriedkavé, napr. budúca API integrácia),
+    táto explicitná hodnota má prednosť pred automatickým systémovým časom.
+    """
+    data = dict(data)  # nemutovať vstup volajúceho
+    explicit_placed_at = data.pop("placed_at", None)
     fields = list(data.keys())
     placeholders = ", ".join(["?"] * len(fields))
     columns = ", ".join(fields)
     values = [data[f] for f in fields]
+    ts = now()
+    placed_at = explicit_placed_at or ts
     with get_conn() as conn:
         c = conn.cursor()
         c.execute(
-            f"INSERT INTO tickets (user_id, created_at, {columns}) VALUES (?, ?, {placeholders})",
-            [user_id, now()] + values,
+            f"INSERT INTO tickets (user_id, created_at, placed_at, {columns}) VALUES (?, ?, ?, {placeholders})",
+            [user_id, ts, placed_at] + values,
         )
         conn.commit()
         return c.lastrowid
