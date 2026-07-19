@@ -317,6 +317,11 @@ def share_ticket(ticket_id: int):
     update_ticket(ticket_id, {"shared": 1})
 
 
+def unshare_ticket(ticket_id: int):
+    """Stiahne tiket zo Syndikátneho Feedu späť do súkromného režimu (shared = 0)."""
+    update_ticket(ticket_id, {"shared": 0})
+
+
 def get_my_tickets(user_id: int):
     with get_conn() as conn:
         return conn.execute(
