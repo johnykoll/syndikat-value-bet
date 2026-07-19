@@ -12,7 +12,11 @@ Obe funkcie vracajú rovnaký normalizovaný dict:
   "sport": str, "liga": str, "timy": str, "soft_bookmaker": str,
   "typ_marketu": str, "tip": str, "soft_kurz": float, "skore": str,
   "match_date": str (ISO 'YYYY-MM-DD' ak je viditeľný dátum zápasu, inak ""),
-  "match_time": str ('HH:MM' ak je viditeľný čas začiatku zápasu, inak "")
+  "match_time": str ('HH:MM' ak je viditeľný čas začiatku zápasu, inak ""),
+  "opacny_kurz": float | None (kurz protistrany/opačného výsledku, ak je na
+      screenshote viditeľný - typicky z arbitrážnych skenerov ako BetBurger),
+  "typ_opacneho_kurzu": str - jedna z: "Žiadny", "Trhový pár (BetBurger)",
+      "Sharp referencia protistrany" (podľa toho, čo AI z obrázka rozpozná)
 }
 Ak sa parsovanie úplne nepodarí (žiadne pole sa nedalo obnoviť), vráti None a chybovú správu.
 """
@@ -21,9 +25,10 @@ import base64
 import json
 import re
 
-PARSE_PROMPT = """Si expert na analýzu športových stávkových tiketov zo screenshotov.
-Pozri sa na priložený obrázok stávkového tiketu / kurzovej ponuky a vráť VÝHRADNE
-jeden čistý JSON objekt (žiadny iný text, žiadne markdown bločky) s týmito kľúčmi:
+PARSE_PROMPT = """Si expert na analýzu športových stávkových tiketov a arbitrážnych
+skenerov (napr. BetBurger, OddsJam, RebelBetting) zo screenshotov.
+Pozri sa na priložený obrázok a vráť VÝHRADNE jeden čistý JSON objekt (žiadny iný
+text, žiadne markdown bločky) s týmito kľúčmi:
 
 {
   "sport": "napr. Futbal, Tenis, Hokej",
@@ -35,13 +40,32 @@ jeden čistý JSON objekt (žiadny iný text, žiadne markdown bločky) s týmit
   "soft_kurz": 1.85,
   "skore": "aktuálne skóre ak je viditeľné, inak prázdny string",
   "match_date": "dátum začiatku zápasu vo formáte YYYY-MM-DD, ak je na obrázku viditeľný dátum (napr. '19.7.' alebo '19.7.2026'), inak prázdny string",
-  "match_time": "čas začiatku zápasu vo formáte HH:MM (24-hodinový), ak je viditeľný, inak prázdny string"
+  "match_time": "čas začiatku zápasu vo formáte HH:MM (24-hodinový), ak je viditeľný, inak prázdny string",
+  "opacny_kurz": 1.51,
+  "typ_opacneho_kurzu": "Žiadny"
 }
+
+DÔLEŽITÉ - arbitráž / surebet / BetBurger screenshoty:
+Ak obrázok pochádza z arbitrážneho skenera (BetBurger a podobné) alebo inak jasne
+zobrazuje DVOJICU kurzov na opačné výsledky rovnakého trhu (napr. Over/Under,
+domáci/hosť, sharp vs soft strana):
+  - Hlavný value tip (ten, ktorý má odporúčaný/zvýraznený vklad) zapíš klasicky
+    do "soft_kurz" a jeho tip do "tip".
+  - Kurz opačnej strany (napr. Under, keď náš tip je Over; alebo kurz hosťa,
+    keď náš tip je na domáceho) zapíš do "opacny_kurz".
+  - Ak je zrejmé, že ide o dvojicu z rôznych kníh/výmen tvoriacu arbitrážny pár
+    (typický BetBurger layout s dvoma stĺpcami kurzov a dvoma kanceláriami),
+    nastav "typ_opacneho_kurzu" na "Trhový pár (BetBurger)".
+  - Ak je namiesto toho vidno len referenčný "sharp" kurz protistrany (nie
+    priamy pár k nášmu tipu, skôr orientačná sharp kotva), nastav
+    "typ_opacneho_kurzu" na "Sharp referencia protistrany".
+  - Ak screenshot žiadny opačný/protistranový kurz vôbec neobsahuje, nechaj
+    "opacny_kurz" na null a "typ_opacneho_kurzu" na "Žiadny".
 
 Dôležité pravidlá pre platný JSON:
 - Ak sa v tíme, lige alebo tipe vyskytuje úvodzovka ('), escapuj ju alebo ju vynechaj.
 - Nepoužívaj markdown bloky (```), žiadny text pred alebo za JSON objektom.
-- Ak niektorú hodnotu nevieš určiť, daj prázdny string ("") alebo pre soft_kurz hodnotu null.
+- Ak niektorú hodnotu nevieš určiť, daj prázdny string ("") alebo pre soft_kurz/opacny_kurz hodnotu null.
 Vráť IBA JSON, nič iné.
 """
 
@@ -51,10 +75,18 @@ Vráť IBA JSON, nič iné.
 DEFAULT_SCHEMA = {
     "sport": "", "liga": "", "timy": "", "soft_bookmaker": "", "typ_marketu": "",
     "tip": "", "soft_kurz": None, "skore": "", "match_date": "", "match_time": "",
+    "opacny_kurz": None, "typ_opacneho_kurzu": "Žiadny",
 }
 
 _STRING_FIELDS = ["sport", "liga", "timy", "soft_bookmaker", "typ_marketu", "tip",
-                  "skore", "match_date", "match_time"]
+                  "skore", "match_date", "match_time", "typ_opacneho_kurzu"]
+
+_NUMERIC_FIELDS = ["soft_kurz", "opacny_kurz"]
+
+# Pole, ktoré sa pri vyhodnocovaní "je táto odpoveď úplne prázdna?" ignoruje -
+# ide o klasifikačné pole s netriviálnym defaultom ("Žiadny"), nie o dátovú
+# hodnotu z obrázka, takže samo o sebe by falošne vyzeralo ako "niečo sa našlo".
+_EMPTINESS_IGNORED_FIELDS = {"typ_opacneho_kurzu"}
 
 
 def _strip_markdown_fences(text: str) -> str:
@@ -87,12 +119,13 @@ def _regex_fallback_extract(raw_text: str) -> dict:
         m = re.search(rf'"{key}"\s*:\s*"(.*?)"\s*[,\}}\r\n]', raw_text, re.DOTALL)
         if m:
             result[key] = m.group(1).strip()
-    m = re.search(r'"soft_kurz"\s*:\s*([\d.]+)', raw_text)
-    if m:
-        try:
-            result["soft_kurz"] = float(m.group(1))
-        except ValueError:
-            pass
+    for key in _NUMERIC_FIELDS:
+        m = re.search(rf'"{key}"\s*:\s*([\d.]+)', raw_text)
+        if m:
+            try:
+                result[key] = float(m.group(1))
+            except ValueError:
+                pass
     return result
 
 
@@ -145,11 +178,17 @@ def _image_to_b64(image_bytes: bytes) -> str:
 
 
 def _is_effectively_empty(data: dict) -> bool:
-    """True ak sa z odpovede nepodarilo vytiahnuť vôbec nič použiteľné."""
+    """
+    True ak sa z odpovede nepodarilo vytiahnuť vôbec nič použiteľné.
+    `typ_opacneho_kurzu` sa ignoruje - jeho default ("Žiadny") nie je prázdna
+    hodnota v bežnom zmysle, takže by inak vždy pôsobil ako "niečo sa našlo".
+    """
     if not data:
         return True
     return all(
-        (data.get(k) in (None, "", 0)) for k in list(DEFAULT_SCHEMA.keys())
+        (data.get(k) in (None, "", 0))
+        for k in DEFAULT_SCHEMA.keys()
+        if k not in _EMPTINESS_IGNORED_FIELDS
     )
 
 
