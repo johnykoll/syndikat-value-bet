@@ -34,6 +34,69 @@ def edge_pct(soft_kurz: float, fair_kurz_val: float) -> Optional[float]:
     return (soft_kurz / fair_kurz_val) - 1
 
 
+def fair_kurz_market_pair(soft_kurz: float, opacny_kurz: float) -> Optional[float]:
+    """
+    SCENÁR 2 - máme Soft_kurz (náš value tip) a Opačný kurz protistrany, ktoré
+    spolu tvoria prirodzený dvojkurzový trh (typicky BetBurger arbitráž medzi
+    dvoma stávkovými kanceláriami/exchange - nie referenčný "sharp" kurz).
+
+    Implied_Prob = (1/Soft_kurz) + (1/Opacny_kurz)
+    Fair_kurz    = Soft_kurz * Implied_Prob
+    (matematicky identické s dvoj-kurzovým vetvením `fair_kurz()`, len aplikované
+    na dvojicu Soft/Opačný namiesto Sharp K/L - marža sa odvodí priamo z dvojice,
+    globálna marža sa tu nepoužíva.)
+    """
+    if not soft_kurz or not opacny_kurz or soft_kurz <= 1 or opacny_kurz <= 1:
+        return None
+    implied_prob = (1 / soft_kurz) + (1 / opacny_kurz)
+    return soft_kurz * implied_prob
+
+
+def fair_kurz_from_opponent_margin(opacny_kurz: float, global_marza: float) -> Optional[float]:
+    """
+    SCENÁR 3 - máme LEN sharp kurz protistrany (opačnej strany), žiadny priamy
+    sharp kurz pre náš vlastný tip. Použijeme registrovanú globálnu maržu na
+    "očistenie" kurzu protistrany, a férovú pravdepodobnosť nášho tipu dopočítame
+    ako doplnok do 1 (predpoklad dvojvýsledkového trhu).
+
+    p_opp_raw  = 1 / Opacny_kurz                    (surová pravdepodobnosť protistrany, s maržou)
+    p_opp_fair = p_opp_raw / (1 + global_marza)      (očistená o registrovanú maržu)
+    p_our_fair = 1 - p_opp_fair                       (fér. pravdepodobnosť nášho tipu, doplnok do 1)
+    Fair_kurz  = 1 / p_our_fair
+    """
+    if not opacny_kurz or opacny_kurz <= 1:
+        return None
+    p_opp_raw = 1 / opacny_kurz
+    p_opp_fair = p_opp_raw / (1 + (global_marza or 0))
+    p_our_fair = 1 - p_opp_fair
+    if p_our_fair <= 0:
+        return None
+    return 1 / p_our_fair
+
+
+def resolve_fair_kurz(soft_kurz: float, sharp_k: Optional[float], opacny_kurz: Optional[float],
+                       opponent_role: str, global_marza: float) -> tuple:
+    """
+    Dynamický výber scenára výpočtu Fair kurzu podľa toho, aké dáta má
+    používateľ k dispozícii. Vracia (fair_kurz | None, scenario_number | None).
+
+    - SCENÁR 1: sharp_k je vyplnený (priamy sharp kurz, s opacny_kurz ako
+      prípadným druhým sharp kurzom L rovnakej dvojice) -> `fair_kurz()`.
+    - SCENÁR 2: sharp_k chýba, opacny_kurz vyplnený a označený ako
+      "market_pair" (BetBurger arbitráž) -> `fair_kurz_market_pair()`.
+    - SCENÁR 3: sharp_k chýba, opacny_kurz vyplnený a označený ako
+      "sharp_reference" (sharp kurz protistrany) -> `fair_kurz_from_opponent_margin()`.
+    - Inak: nedostatok dát -> (None, None).
+    """
+    if sharp_k:
+        return fair_kurz(sharp_k, opacny_kurz, global_marza), 1
+    if opacny_kurz and opponent_role == "market_pair":
+        return fair_kurz_market_pair(soft_kurz, opacny_kurz), 2
+    if opacny_kurz and opponent_role == "sharp_reference":
+        return fair_kurz_from_opponent_margin(opacny_kurz, global_marza), 3
+    return None, None
+
+
 def kelly_percent(edge: float, soft_kurz: float, kelly_frakcia: float, max_bet_limit: float,
                    bankroll: Optional[float] = None) -> float:
     """
