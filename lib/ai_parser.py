@@ -97,12 +97,19 @@ def parse_with_gemini(image_bytes: bytes, api_key: str) -> tuple:
 
     Používa oficiálne Google Gen AI Python SDK (balíček `google-genai`, import
     `from google import genai`) namiesto ručného skladania REST URL cez `requests`.
-    SDK si samo rieši správnu verziu endpointu aj serializáciu multimodálneho vstupu,
-    takže sa vyhneme 404 chybám z nesprávne poskladanej URL.
 
-    Model: gemini-2.5-flash (stabilný GA model, dostatočne rýchly a lacný pre
-    štruktúrovanú extrakciu dát zo screenshotu). Ak by ste chceli maximálny výkon
-    a nevadí vyššia cena/latencia, dá sa vymeniť za "gemini-3.5-flash".
+    Model - DÔLEŽITÉ (stav overený k júlu 2026 priamo na oficiálnej Google
+    deprecation stránke ai.google.dev/gemini-api/docs/deprecations):
+      - "gemini-2.5-flash"  -> AKTÍVNY, oficiálny shutdown dátum až 16. 10. 2026. PRIMÁRNY.
+      - "gemini-3.5-flash"  -> najnovší model (máj 2026), zatiaľ bez oznámeného shutdownu. FALLBACK.
+      - "gemini-2.0-flash"  -> už VYPNUTÝ Googlom od 1. 6. 2026 - volania naň vracajú 404.
+      - "gemini-1.5-flash"  -> vypnutý ešte skôr (celá 1.x generácia je mŕtva).
+    Preto sa 2.0/1.5 NEPOUŽÍVAJÚ ako fallback - dali by presne tú istú 404 chybu.
+
+    Ak aj "gemini-2.5-flash" hádže 404, najčastejšie príčiny bývajú mimo názvu modelu:
+    API kľúč bez prístupu k modelu (napr. neaktivovaná Generative Language API pre projekt),
+    alebo zastaraná verzia balíčka `google-genai` (over cez `pip show google-genai`,
+    prípadne `pip install --upgrade google-genai`).
 
     Vyžaduje: pip install google-genai (pridané do requirements.txt).
     """
@@ -117,19 +124,30 @@ def parse_with_gemini(image_bytes: bytes, api_key: str) -> tuple:
 
     try:
         client = genai.Client(api_key=api_key)
-
         image_part = types.Part.from_bytes(data=image_bytes, mime_type="image/png")
+        config = types.GenerateContentConfig(response_mime_type="application/json")
 
-        response = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=[PARSE_PROMPT, image_part],
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json",
-            ),
+        # Primárny model + jeden odolný fallback na aktuálne podporovaný model
+        # (obidva sú k júlu 2026 oficiálne živé - pozri poznámku vyššie).
+        models_to_try = ["gemini-2.5-flash", "gemini-3.5-flash"]
+        last_error = None
+
+        for model_name in models_to_try:
+            try:
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=[PARSE_PROMPT, image_part],
+                    config=config,
+                )
+                return _extract_json(response.text), None
+            except Exception as e:
+                last_error = e
+                continue
+
+        return None, (
+            f"Gemini parsing zlyhalo na oboch skúšaných modeloch ({', '.join(models_to_try)}): "
+            f"{last_error}. Over API kľúč (má prístup k Gemini API?) a verziu balíčka google-genai."
         )
-
-        content = response.text
-        return _extract_json(content), None
     except Exception as e:
         return None, f"Gemini parsing zlyhalo: {e}"
 
