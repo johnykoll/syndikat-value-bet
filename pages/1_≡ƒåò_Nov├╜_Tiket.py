@@ -82,32 +82,59 @@ mix_tiket = st.checkbox("🎟️ Mix Tiket (kombinácia viacerých udalostí/zá
 
 # ---------------- MATEMATICKÉ JADRO ----------------
 st.subheader("2️⃣ Kurzy a Fair Kurz")
-c1, c2, c3, c4 = st.columns(4)
-sharp_k = c1.number_input("Sharp Kurz (K)", min_value=1.01, value=1.90, step=0.01, format="%.2f")
-sharp_l_enabled = c2.checkbox("Zadať aj opačný sharp kurz (L)?")
-sharp_l = c2.number_input("Sharp Kurz (L)", min_value=1.01, value=2.05, step=0.01, format="%.2f",
-                           disabled=not sharp_l_enabled) if True else None
-if not sharp_l_enabled:
-    sharp_l = None
-soft_kurz = c3.number_input("Soft Kurz", min_value=1.01,
-                             value=float(prefill.get("soft_kurz") or 2.00), step=0.01, format="%.2f")
-global_marza = c4.number_input("Globálna marža %", min_value=0.0, max_value=20.0,
-                                value=user["global_marza"] * 100, step=0.1, format="%.1f") / 100
+st.caption(
+    "Zadaj buď priamy sharp kurz, alebo kurz protistrany (napr. z BetBurger arbitráže) - "
+    "obe polia sú teraz voliteľné, appka si sama vyberie správny výpočtový scenár."
+)
 
-fair = calc.fair_kurz(sharp_k, sharp_l, global_marza)
+c1, c2, c3 = st.columns(3)
+soft_kurz = c1.number_input("Soft Kurz (náš tip)", min_value=1.01,
+                             value=float(prefill.get("soft_kurz") or 2.00), step=0.01, format="%.2f")
+global_marza = c2.number_input("Globálna marža %", min_value=0.0, max_value=20.0,
+                                value=user["global_marza"] * 100, step=0.1, format="%.1f") / 100
+sharp_k_input = c3.number_input(
+    "Sharp Kurz (priamy, nepovinné)", min_value=0.0, value=0.0, step=0.01, format="%.2f",
+    help="Nechaj na 0, ak nemáš priamy sharp kurz referenčnej stávkovej kancelárie.",
+)
+sharp_k = sharp_k_input if sharp_k_input > 1.0 else None
+
+st.markdown("**Opačný kurz protistrany** (napr. BetBurger arbitráž alebo sharp referencia opačnej strany)")
+oc1, oc2 = st.columns(2)
+OPPONENT_ROLE_OPTIONS = {
+    "Žiadny (nemám)": "none",
+    "Trhový pár - BetBurger/arbitráž (Scenár 2)": "market_pair",
+    "Sharp referenčný kurz protistrany (Scenár 3)": "sharp_reference",
+}
+opponent_role_label = oc1.selectbox("Čo predstavuje opačný kurz?", list(OPPONENT_ROLE_OPTIONS.keys()))
+opponent_role = OPPONENT_ROLE_OPTIONS[opponent_role_label]
+opacny_kurz_input = oc2.number_input(
+    "Opačný kurz protistrany", min_value=0.0, value=0.0, step=0.01, format="%.2f",
+    disabled=(opponent_role == "none"),
+    help="Napr. Betdaq/Betfair kurz z BetBurger screenshotu, alebo sharp kurz opačnej strany.",
+)
+opacny_kurz = opacny_kurz_input if (opacny_kurz_input > 1.0 and opponent_role != "none") else None
+
+fair, scenario_used = calc.resolve_fair_kurz(soft_kurz, sharp_k, opacny_kurz, opponent_role, global_marza)
 edge = calc.edge_pct(soft_kurz, fair) if fair else None
 
-r1, r2 = st.columns(2)
+SCENARIO_LABELS = {
+    1: "Scenár 1 - priamy sharp kurz",
+    2: "Scenár 2 - trhový pár (BetBurger)",
+    3: "Scenár 3 - sharp protistrana + marža",
+}
+
+r1, r2, r3 = st.columns(3)
 r1.metric("🎯 Fair Kurz", f"{fair:.3f}" if fair else "-")
-edge_color = "normal"
-if edge is not None:
-    r2.metric("⚡ Edge", f"{edge*100:+.2f} %")
+r2.metric("⚡ Edge", f"{edge*100:+.2f} %" if edge is not None else "-")
+r3.metric("🧮 Použitý scenár", SCENARIO_LABELS.get(scenario_used, "-"))
+
+if fair is None:
+    st.info("Zadajte buď priamy sharp kurz, alebo kurz protistrany pre výpočet Kellyho vkladu.")
+elif edge is not None:
     if edge >= 0.06:
         st.success(pyramida.get_edge_message(edge))
     elif edge < 0.02:
         st.warning(pyramida.get_edge_message(edge))
-else:
-    r2.metric("⚡ Edge", "-")
 
 # ---------------- KELLY & RISK PANEL ----------------
 st.subheader("3️⃣ Kellyho kalkulačka a Risk Panel")
@@ -200,7 +227,7 @@ def _build_ticket_data(shared_flag: int):
     return {
         "sport": sport, "liga": liga, "timy": timy, "soft_bookmaker": soft_bookmaker,
         "typ_marketu": typ_marketu, "tip": tip,
-        "sharp_k": sharp_k, "sharp_l": sharp_l, "soft_kurz": soft_kurz,
+        "sharp_k": sharp_k, "sharp_l": opacny_kurz, "soft_kurz": soft_kurz,
         "fair_kurz": fair, "edge": edge, "kelly_pct": kelly_pct,
         "priebezna_hodnota_tiketu": priebezna_hodnota_tiketu,
         "odporucany_vklad": vklad, "neposistena_cast": neposistena,
